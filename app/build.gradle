@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+android {
+    namespace 'it.ampy.ampycam'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'it.ampy.ampycam'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+    }
+    // Stable signing only through GitHub Actions secrets. Never commit a keystore.
+    if (System.getenv('AMPYCAM_KEYSTORE_PATH') != null) {
+        signingConfigs {
+            ampyRelease {
+                storeFile file(System.getenv('AMPYCAM_KEYSTORE_PATH'))
+                storePassword System.getenv('AMPYCAM_STORE_PASSWORD')
+                keyAlias System.getenv('AMPYCAM_KEY_ALIAS')
+                keyPassword System.getenv('AMPYCAM_KEY_PASSWORD')
+            }
+        }
+        buildTypes {
+            debug { signingConfig signingConfigs.ampyRelease }
+            release {
+                signingConfig signingConfigs.ampyRelease
+                minifyEnabled false
+                shrinkResources false
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
