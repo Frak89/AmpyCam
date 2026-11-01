@@ -393,6 +393,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         if (target > cur + 0.01f) { float nw = ph / target; captureRect.inset((pw - nw) / 2, 0); }
         else if (target < cur - 0.01f) { float nh = pw * target; captureRect.inset(0, (ph - nh) / 2); }
         hud.view.set(captureRect);
+        hud.full.set(previewRect);
         hud.invalidate();
         tv.setPivotX(pw / 2f); tv.setPivotY(ph / 2f);
         applyLivePreviewStyle();
@@ -667,8 +668,8 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
 
     private void tapFocus(float x, float y) {
         if (!captureRect.contains(x, y)) return;
-        st.afX = (x - captureRect.left) / captureRect.width();
-        st.afY = (y - captureRect.top) / captureRect.height();
+        st.afX = (x - previewRect.left) / previewRect.width();
+        st.afY = (y - previewRect.top) / previewRect.height();
         st.afPointSet = true;
         float s = dp(70);
         hud.af.set(x - s / 2, y - s / 2, x + s / 2, y + s / 2);
@@ -676,14 +677,14 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         hud.afState = st.af == CamState.AF_MF ? 0 : 1;
         hud.exposureSlider = st.isPro() ? Float.NaN : st.ev / 2;
         push();
-        if (st.af != CamState.AF_MF) eng.triggerAf();
+        if (st.af == CamState.AF_ONESHOT) eng.triggerAf();
         hud.invalidate();
     }
 
     private void toggleMagnify() {
         magnify = magnify >= 10 ? 1 : magnify == 1 ? 5 : 10;
-        float px = captureRect.left + st.afX * captureRect.width() - previewRect.left;
-        float py = captureRect.top + st.afY * captureRect.height() - previewRect.top;
+        float px = st.afX * previewRect.width();
+        float py = st.afY * previewRect.height();
         tv.setPivotX(px); tv.setPivotY(py);
         tv.animate().scaleX(magnify).scaleY(magnify).setDuration(180).start();
         hud.mfAssist = (int) magnify;
@@ -783,8 +784,13 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
     private void previewFx() {
         ui.postDelayed(() -> {
             Bitmap f = frozenFrame();
-            if (f != null) fx.play(st.fx, f, captureRect, thumb.screenRect(), "ANTEPRIMA\n" + ShutterFx.PHOTO_NAMES[0], null);
+            if (f != null) fx.play(st.fx, f, captureRect, thumb.screenRect(), "ANTEPRIMA\n" + fxName(st.fx) + "\nAMPYCAM", null);
         }, 250);
+    }
+
+    private String fxName(String k) {
+        for (int i = 0; i < ShutterFx.PHOTO_KEYS.length; i++) if (ShutterFx.PHOTO_KEYS[i].equals(k)) return ShutterFx.PHOTO_NAMES[i];
+        return k.toUpperCase(Locale.ROOT);
     }
 
     private void openQ() {
@@ -963,6 +969,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         shot.orientation = jpegOrientation();
         shot.jpegQ = st.jpegQ;
         shot.raw = wantRaw() && info.raw;
+        shot.precapture = info.flash && (st.flash == CamState.FL_ON || st.flash == CamState.FL_AUTO) && st.mode != CamState.M_NIGHT;
         int d = st.effDial();
         boolean tvMode = d == CamState.D_TV || d == CamState.D_M;
         long baseExp = tvMode ? (long) (st.shutter * 1e9) : lastExp;
@@ -1068,7 +1075,16 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         });
     }
 
-    @Override public void onError(String msg) { ui.post(() -> hud.showToast("⚠ " + msg)); }
+    @Override public void onError(String msg) {
+        ui.post(() -> {
+            hud.showToast("⚠ " + msg);
+            if (videoOut != null && !eng.isRecording()) {
+                Object[] out = videoOut; videoOut = null;
+                saver.execute(() -> ImageSaver.finishVideo(this, (Uri) out[0], (ParcelFileDescriptor) out[1], false));
+                shutter.setState(st.mode == CamState.M_VIDEO ? Widgets.Shutter.VIDEO : Widgets.Shutter.PHOTO);
+            }
+        });
+    }
 
     @Override public void onFrameResult(long expNs, int iso, float focusDist, int afState, int aeState, Face[] faces, float aperture, float focal) {
         ui.post(() -> {
@@ -1090,8 +1106,8 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
                     Rect b = f.getBounds();
                     float[] p1 = fromSensor(b.left / (float) info.active.width(), b.top / (float) info.active.height());
                     float[] p2 = fromSensor(b.right / (float) info.active.width(), b.bottom / (float) info.active.height());
-                    hud.faces.add(new RectF(captureRect.left + Math.min(p1[0], p2[0]) * captureRect.width(), captureRect.top + Math.min(p1[1], p2[1]) * captureRect.height(),
-                        captureRect.left + Math.max(p1[0], p2[0]) * captureRect.width(), captureRect.top + Math.max(p1[1], p2[1]) * captureRect.height()));
+                    hud.faces.add(new RectF(previewRect.left + Math.min(p1[0], p2[0]) * previewRect.width(), previewRect.top + Math.min(p1[1], p2[1]) * previewRect.height(),
+                        previewRect.left + Math.max(p1[0], p2[0]) * previewRect.width(), previewRect.top + Math.max(p1[1], p2[1]) * previewRect.height()));
                 }
             }
             if (changed) refresh();
@@ -1256,7 +1272,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         // phone held upright: roll of the horizon = rotation around the viewing axis
         float g0 = rm[6], g1 = rm[7];
         float horizon = (float) Math.toDegrees(Math.atan2(g0, g1));
-        if (deviceDeg == 90) horizon -= 90; else if (deviceDeg == 270) horizon += 90; else if (deviceDeg == 180) horizon += 180;
+        if (deviceDeg == 90) horizon += 90; else if (deviceDeg == 270) horizon -= 90; else if (deviceDeg == 180) horizon += 180;
         while (horizon > 180) horizon -= 360; while (horizon < -180) horizon += 360;
         hud.roll = horizon * 0.3f + hud.roll * 0.7f;
         hud.pitch = (float) (Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, rm[8])))) * 0.3f + hud.pitch * 0.7f);

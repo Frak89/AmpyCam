@@ -144,7 +144,7 @@ public class ShutterFx extends View {
     /* ---------------- effects ---------------- */
 
     private void classic(Canvas c, float t) {
-        c.drawColor(a(0xff000000, (int) (255 * (1 - t))));
+        p.setColor(a(0xff000000, (int) (255 * (1 - t)))); c.drawRect(from, p);
     }
 
     private void rgbSplit(Canvas c, RectF dst, float split, int slices, float tear) {
@@ -302,11 +302,11 @@ public class ShutterFx extends View {
             float k = ease(t / 0.32f);
             float hh = from.height() * (1 - k) + dp(2);
             d.set(from.left, cy - hh / 2, from.right, cy + hh / 2);
-            c.drawColor(a(0xff000000, (int) (255 * k)));
+            p.setColor(a(0xff000000, (int) (255 * k))); c.drawRect(from, p);
             c.drawBitmap(frame, null, d, p);
             p.setColor(a(0xffffffff, (int) (200 * k))); c.drawRect(d, p);
         } else if (t < 0.55f) {
-            c.drawColor(0xff000000);
+            p.setColor(0xff000000); c.drawRect(from, p);
             float k = ease((t - 0.32f) / 0.23f);
             float ww = from.width() * (1 - k) + dp(4);
             p.setColor(0xffffffff);
@@ -315,7 +315,7 @@ public class ShutterFx extends View {
             p.clearShadowLayer();
         } else {
             float k = ease((t - 0.55f) / 0.45f);
-            c.drawColor(a(0xff000000, (int) (255 * (1 - k))));
+            p.setColor(a(0xff000000, (int) (255 * (1 - k)))); c.drawRect(from, p);
             float x = cx + (to.centerX() - cx) * k, y = cy + (to.centerY() - cy) * k;
             p.setColor(0xffffffff); p.setShadowLayer(dp(18), 0, 0, th.accent);
             c.drawCircle(x, y, dp(4) + dp(10) * k, p);
@@ -436,7 +436,7 @@ public class ShutterFx extends View {
     private void recFilm(Canvas c, float t) {
         int n = 3 - Math.min(2, (int) (t * 3));
         float k = (t * 3) % 1;
-        c.drawColor(a(0xff1a1408, (int) (200 * (1 - t))));
+        p.setColor(a(0xff1a1408, (int) (200 * (1 - t)))); c.drawRect(from, p);
         float cx = from.centerX(), cy = from.centerY(), rad = Math.min(from.width(), from.height()) * 0.28f;
         line.setStrokeWidth(dp(2)); line.setColor(a(0xffe8dcc0, (int) (230 * (1 - t))));
         c.drawCircle(cx, cy, rad, line); c.drawCircle(cx, cy, rad * 0.85f, line);

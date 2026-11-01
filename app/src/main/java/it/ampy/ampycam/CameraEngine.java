@@ -87,7 +87,7 @@ public class CameraEngine {
     public static final class Shot {
         public final long id = System.nanoTime();
         public final List<long[]> frames = new ArrayList<>(); // per frame: {expNs, iso} or {0, evOffsetIdx} for auto
-        public boolean manual, raw, yuv; public int orientation, jpegQ = 95; public float evOffsetStops;
+        public boolean manual, raw, yuv, precapture; public int orientation, jpegQ = 95; public float evOffsetStops;
         public final Map<String, Object> meta = new HashMap<>();
         public int received;
     }
@@ -463,6 +463,21 @@ public class CameraEngine {
 
     public void capture(Shot shot) {
         if (h == null) return;
+        if (shot.precapture && !ctl.aeManual) {
+            // flash: let AE meter the pre-flash first (AE_PRECAPTURE), then shoot
+            h.post(() -> {
+                try {
+                    if (session != null && preview != null) {
+                        preview.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START);
+                        session.capture(preview.build(), previewCb, h);
+                        preview.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
+                    }
+                } catch (Exception e) { Log.w(TAG, "precapture", e); }
+            });
+            shot.precapture = false;
+            h.postDelayed(() -> capture(shot), 650);
+            return;
+        }
         h.post(() -> {
             if (session == null || dev == null) { cb.onShotFailed(shot, "Sessione non pronta"); return; }
             try {

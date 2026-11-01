@@ -20,7 +20,8 @@ public class HudView extends View {
 
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), t = new Paint(Paint.ANTI_ALIAS_FLAG), bp = new Paint(Paint.FILTER_BITMAP_FLAG);
     private Theme th;
-    public final RectF view = new RectF();       // preview rect on screen
+    public final RectF view = new RectF();       // capture frame on screen
+    public final RectF full = new RectF();       // whole preview (sensor field of view)
     public int grid = 1;
     public boolean level = true, histogram = true, showOverlay = true;
     public float roll, pitch;                    // degrees
@@ -54,7 +55,14 @@ public class HudView extends View {
         if (view.isEmpty()) return;
         long now = SystemClock.uptimeMillis();
         boolean anim = false;
-        if (showOverlay && an != null && an.overlay != null) c.drawBitmap(an.overlay, null, view, bp);
+        if (showOverlay && an != null && an.overlay != null) c.drawBitmap(an.overlay, null, full.isEmpty() ? view : full, bp);
+        if (!full.isEmpty() && (full.width() - view.width() > 2 || full.height() - view.height() > 2)) {
+            // Canon-style aspect mask: everything outside the recorded frame is dimmed
+            p.setStyle(Paint.Style.FILL); p.setColor(0xb0000000);
+            c.drawRect(full.left, full.top, full.right, view.top, p); c.drawRect(full.left, view.bottom, full.right, full.bottom, p);
+            c.drawRect(full.left, view.top, view.left, view.bottom, p); c.drawRect(view.right, view.top, full.right, view.bottom, p);
+            p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(1)); p.setColor(0x66ffffff); c.drawRect(view, p);
+        }
         drawGrid(c);
         if (level) drawLevel(c);
         if (histogram && an != null) drawHistogram(c);
@@ -194,7 +202,7 @@ public class HudView extends View {
         p.setColor(0x66ffffff);
         c.drawLine(cx - len - dp(14), cy, cx - len, cy, p); c.drawLine(cx + len, cy, cx + len + dp(14), cy, p);
         // rolling bar
-        c.save(); c.rotate(-roll, cx, cy);
+        c.save(); c.rotate(roll, cx, cy);
         p.setColor(ok ? 0xff57ff8a : 0xffffffff);
         c.drawLine(cx - len, cy, cx - dp(16), cy, p); c.drawLine(cx + dp(16), cy, cx + len, cy, p);
         c.restore();
