@@ -391,7 +391,9 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         while (d > 180) d -= 360;
         while (d < -180) d += 360;
         uiRot = uiRot + d;
+        float oldRot = hud.uiRot;
         hud.uiRot = target;
+        if (oldRot != target) hud.crawl(oldRot, target);   // Canon strip crawls along the edges
         boolean detach = target != 0;
         infoBar.detached = detach;
         infoBar.animate().alpha(detach ? 0f : 1f).setDuration(200).start();

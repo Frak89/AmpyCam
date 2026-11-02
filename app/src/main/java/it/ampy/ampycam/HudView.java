@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.SystemClock;
@@ -40,6 +41,100 @@ public class HudView extends View {
     public int mfAssist = 0;
     public float uiRot = 0;                      // texts turn with the phone
     public InfoBar strip;                        // drawn here, rotated, when the phone is sideways
+
+    /* ======== caterpillar crawl of the Canon strip along the viewfinder edges ======== */
+    static final long SNAKE_MS = 1050;
+    static final int SNAKE_COLS = 48;
+    private Bitmap snakeBmp; private long snakeStart; private float snakeFrom, snakeTo;
+    private final float[] snakeVerts = new float[(SNAKE_COLS + 1) * 2 * 2];
+    private final Paint snakePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+
+    /** Starts the crawl from the edge used at rotation 'from' to the edge of rotation 'to'. */
+    public void crawl(float from, float to) {
+        if (strip == null || view.isEmpty() || from == to) return;
+        float sh = strip.stripHeight();
+        int len = (int) Math.max(view.width(), view.height());
+        if (snakeBmp != null) snakeBmp.recycle();
+        snakeBmp = Bitmap.createBitmap(Math.max(1, len), Math.max(1, (int) sh), Bitmap.Config.ARGB_8888);
+        strip.drawStrip(new Canvas(snakeBmp), len, sh);
+        snakeFrom = from; snakeTo = to; snakeStart = SystemClock.uptimeMillis();
+        postInvalidateOnAnimation();
+    }
+
+    /** n-step "inchworm" easing: advances in bursts. */
+    private static float stair(float x, int n) {
+        x = Math.max(0, Math.min(1, x));
+        float k = x * n, f = k - (float) Math.floor(k);
+        f = f * f * (3 - 2 * f);
+        return Math.min(1, ((float) Math.floor(k) + f) / n);
+    }
+
+    private void drawSnake(Canvas c, float t) {
+        float sh = strip.stripHeight();
+        RectF r = new RectF(view); r.inset(sh / 2 + dp(2), sh / 2 + dp(2));
+        Path path = new Path();
+        path.addRoundRect(r, sh * 0.9f, sh * 0.9f, Path.Direction.CCW);
+        PathMeasure pm = new PathMeasure(path, true);
+        float total = pm.getLength();
+        if (total <= 0) return;
+        float sFrom = nearestS(pm, total, edgeMid(r, snakeFrom)), sTo = nearestS(pm, total, edgeMid(r, snakeTo));
+        float delta = sTo - sFrom;
+        if (delta > total / 2) delta -= total; else if (delta < -total / 2) delta += total;
+        float dir = Math.signum(delta == 0 ? 1 : delta);
+        float lSrc = edgeLen(r, snakeFrom), lDst = edgeLen(r, snakeTo);
+        // ghosts first (the drag trail), then the body
+        for (int g = 2; g >= 0; g--) {
+            float tt = t - g * 0.07f;
+            if (tt <= 0) continue;
+            float front0 = sFrom + dir * lSrc / 2, back0 = sFrom - dir * lSrc / 2;
+            float front = front0 + (delta + dir * (lDst - lSrc) / 2) * stair(tt, 3);
+            float back = back0 + (delta - dir * (lDst - lSrc) / 2) * stair((tt - 0.14f) / 0.86f, 3);
+            float lo = Math.min(front, back), hi = Math.max(front, back);
+            float squeeze = 1 + 0.22f * (float) Math.sin(Math.PI * Math.min(1, t * 1.2f)) * Math.abs((float) Math.sin(3 * Math.PI * t));
+            float[] pos = new float[2], tan = new float[2];
+            int k = 0;
+            for (int i = 0; i <= SNAKE_COLS; i++) {
+                float s = lo + (hi - lo) * i / SNAKE_COLS;
+                s = ((s % total) + total) % total;
+                pm.getPosTan(s, pos, tan);
+                float nx = -tan[1], ny = tan[0];
+                if ((view.centerX() - pos[0]) * nx + (view.centerY() - pos[1]) * ny < 0) { nx = -nx; ny = -ny; }
+                float half = sh / 2 * squeeze;
+                snakeVerts[k++] = pos[0] + nx * half; snakeVerts[k++] = pos[1] + ny * half;        // bitmap top row → inner side
+                snakeVerts[(SNAKE_COLS + 1) * 2 + k - 2] = pos[0] - nx * half;
+                snakeVerts[(SNAKE_COLS + 1) * 2 + k - 1] = pos[1] - ny * half;
+            }
+            snakePaint.setAlpha(g == 0 ? 255 : g == 1 ? 70 : 32);
+            c.drawBitmapMesh(snakeBmp, SNAKE_COLS, 1, snakeVerts, 0, null, 0, snakePaint);
+            if (g == 0) {
+                // neon head
+                float hs = ((front % total) + total) % total;
+                pm.getPosTan(hs, pos, tan);
+                p.setStyle(Paint.Style.FILL); p.setColor(th.accent);
+                p.setShadowLayer(dp(10), 0, 0, th.accent);
+                c.drawCircle(pos[0], pos[1], dp(3.5f), p);
+                p.clearShadowLayer();
+            }
+        }
+        snakePaint.setAlpha(255);
+    }
+
+    private static float[] edgeMid(RectF r, float rot) {
+        if (rot == -90) return new float[]{r.right, r.centerY()};
+        if (rot == 90) return new float[]{r.left, r.centerY()};
+        if (Math.abs(rot) == 180) return new float[]{r.centerX(), r.top};
+        return new float[]{r.centerX(), r.bottom};
+    }
+    private static float edgeLen(RectF r, float rot) { return Math.abs(rot) == 90 ? r.height() : r.width(); }
+    private static float nearestS(PathMeasure pm, float total, float[] q) {
+        float[] pos = new float[2]; float best = 0, bd = Float.MAX_VALUE;
+        for (int i = 0; i < 400; i++) {
+            float s = total * i / 400f; pm.getPosTan(s, pos, null);
+            float d = (pos[0] - q[0]) * (pos[0] - q[0]) + (pos[1] - q[1]) * (pos[1] - q[1]);
+            if (d < bd) { bd = d; best = s; }
+        }
+        return best;
+    }
 
     /** Viewfinder rect expressed in the rotated (user) frame, centred on the origin. */
     private RectF userFrame() {
@@ -79,12 +174,15 @@ public class HudView extends View {
         c.translate(view.centerX(), view.centerY()); c.rotate(uiRot);
         if (level) drawLevel(c, uf);
         if (histogram && an != null) drawHistogram(c, uf);
-        if (strip != null && uiRot != 0) {
+        boolean crawling = snakeBmp != null && now - snakeStart < SNAKE_MS;
+        if (strip != null && uiRot != 0 && !crawling) {
             float sh = strip.stripHeight();
             c.save(); c.translate(uf.left, uf.bottom - sh); strip.drawStrip(c, uf.width(), sh); c.restore();
             if (strip.levelBlink) anim = true;
         }
         c.restore();
+        if (crawling) { drawSnake(c, (now - snakeStart) / (float) SNAKE_MS); anim = true; }
+        else if (snakeBmp != null) { snakeBmp.recycle(); snakeBmp = null; }
         // faces
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(1.5f)); p.setColor(a(th.secondary, 220));
         for (RectF f : faces) bracket(c, f, dp(10));
