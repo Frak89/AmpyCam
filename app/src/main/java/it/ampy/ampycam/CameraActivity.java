@@ -257,8 +257,9 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         driveChip = chip("", v -> pick("DRIVE / AUTOSCATTO", CamState.DRIVE_NAMES, st.drive, i -> { st.drive = i; refresh(); }));
         aspectChip = chip("", v -> { if (st.mode == CamState.M_VIDEO) return; st.aspect = (st.aspect + 1) % 4; reconfigure(); });
         fxChip = chip("", v -> pickFx());
-        TextView q = chip("Q", v -> openQ());
-        TextView set = chip("⚙", v -> startActivity(new Intent(this, SettingsActivity.class)));
+        TextView q = rot(chip("Q", v -> openQ()));
+        TextView set = rot(chip("⚙", v -> startActivity(new Intent(this, SettingsActivity.class))));
+        rot(flashChip); rot(driveChip); rot(aspectChip); rot(fxChip);
         for (TextView t : new TextView[]{flashChip, driveChip, aspectChip, fxChip, q, set}) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.rightMargin = dp(6);
             topBar.addView(t, lp);
@@ -284,7 +285,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         for (int i = 0; i < CamState.DIAL.length; i++) {
             final int k = i;
             TextView c = chip(CamState.DIAL[i], v -> setDial(k));
-            dialChips.add(c);
+            dialChips.add(rot(c));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.leftMargin = dp(3); lp.rightMargin = dp(3);
             dialRow.addView(c, lp);
         }
@@ -294,7 +295,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         for (int i = 0; i < PARAMS.length; i++) {
             final int k = i;
             TextView c = chip(PARAMS[i], v -> { param = k; refreshDial(); refresh(); });
-            paramChips.add(c);
+            paramChips.add(rot(c));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.leftMargin = dp(3); lp.rightMargin = dp(3);
             paramRow.addView(c, lp);
         }
@@ -314,7 +315,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(28), dp(6), dp(28), dp(18));
-        thumb = new Widgets.Thumb(this, th);
+        thumb = rot(new Widgets.Thumb(this, th));
         thumb.setOnClickListener(v -> openLast());
         row.addView(thumb, new LinearLayout.LayoutParams(dp(58), dp(58)));
         View sp1 = new View(this); row.addView(sp1, new LinearLayout.LayoutParams(0, 1, 1));
@@ -326,7 +327,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         });
         row.addView(shutter, new LinearLayout.LayoutParams(dp(84), dp(84)));
         View sp2 = new View(this); row.addView(sp2, new LinearLayout.LayoutParams(0, 1, 1));
-        TextView flip = chip("⟲", v -> switchCamera());
+        TextView flip = rot(chip("⟲", v -> switchCamera()));
         flip.setTextSize(22);
         row.addView(flip, new LinearLayout.LayoutParams(dp(58), dp(58)));
         bottom.addView(row);
@@ -359,11 +360,47 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         refresh();
     }
 
-    private void rotateIcons() {
-        float r = -deviceDeg == -270 ? 90 : -deviceDeg;
-        if (deviceDeg == 270) r = 90; else if (deviceDeg == 90) r = -90; else if (deviceDeg == 180) r = 180; else r = 0;
-        for (View v : new View[]{thumb, flashChip, driveChip, aspectChip, fxChip}) v.animate().rotation(r).setDuration(250).start();
+    /* ---------- rotation + scale (like Modifier.rotate().scale() in Compose) ---------- */
+    private final List<View> rotatables = new ArrayList<>();
+    private float uiRot = 0;   // degrees the UI content is rotated
+
+    /** Registers a control that turns with the phone, scaled so the rotated content stays inside its slot. */
+    private <T extends View> T rot(T v) {
+        rotatables.add(v);
+        v.addOnLayoutChangeListener((vv, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) { vv.animate().cancel(); vv.setRotation(uiRot); float s = fitScale(vv, uiRot); vv.setScaleX(s); vv.setScaleY(s); }
+        });
+        return v;
     }
+
+    /** Scale that makes a w×h box rotated by deg fit inside w×h. */
+    private static float fitScale(View v, float deg) {
+        float w = v.getWidth(), h = v.getHeight();
+        if (w <= 0 || h <= 0) return 1;
+        double a = Math.toRadians(deg);
+        double c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+        double bw = w * c + h * s, bh = w * s + h * c;   // bounding box of the rotated content
+        return (float) Math.min(1, Math.min(w / bw, h / bh));
+    }
+
+    private void rotateIcons() {
+        float target = deviceDeg == 90 ? -90 : deviceDeg == 270 ? 90 : deviceDeg == 180 ? 180 : 0;
+        // shortest way round from the current angle
+        float d = target - uiRot;
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        uiRot = uiRot + d;
+        hud.uiRot = target;
+        refresh();
+        for (View v : rotatables) {
+            float s = fitScale(v, uiRot);
+            // overshoot a little in scale while turning: rotation + scale animated together
+            v.animate().rotation(uiRot).scaleX(s).scaleY(s).setDuration(320)
+                .setInterpolator(new android.view.animation.OvershootInterpolator(1.1f)).start();
+        }
+        hud.invalidate();
+    }
+    private boolean landscapeUi() { return deviceDeg == 90 || deviceDeg == 270; }
 
     private void updateModeUi() {
         boolean pro = st.mode == CamState.M_PRO;
@@ -417,7 +454,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         aspectChip.setText(st.mode == CamState.M_VIDEO ? "16:9" : CamState.ASPECT_NAMES[st.aspect]);
         int fi = 0; for (int i = 0; i < ShutterFx.PHOTO_KEYS.length; i++) if (ShutterFx.PHOTO_KEYS[i].equals(st.fx)) fi = i;
         int vi = 0; for (int i = 0; i < ShutterFx.VIDEO_KEYS.length; i++) if (ShutterFx.VIDEO_KEYS[i].equals(st.vfx)) vi = i;
-        fxChip.setText("✦ " + (st.mode == CamState.M_VIDEO ? ShutterFx.VIDEO_NAMES[vi] : ShutterFx.PHOTO_NAMES[fi]));
+        fxChip.setText(landscapeUi() ? "✦ FX" : "✦ " + (st.mode == CamState.M_VIDEO ? ShutterFx.VIDEO_NAMES[vi] : ShutterFx.PHOTO_NAMES[fi]));
         for (int i = 0; i < dialChips.size(); i++) chipSel(dialChips.get(i), st.dial == i);
         for (int i = 0; i < paramChips.size(); i++) chipSel(paramChips.get(i), param == i);
         for (TextView z : zoomChips) chipSel(z, Math.abs((Float) z.getTag() - zoom) < 0.05f);
@@ -720,7 +757,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
     }
 
     private void buildZoomChips() {
-        zoomRow.removeAllViews(); zoomChips.clear();
+        zoomRow.removeAllViews(); rotatables.removeAll(zoomChips); zoomChips.clear();
         if (info == null) return;
         float[] stops = {0.5f, 0.6f, 1f, 2f, 5f, 10f};
         for (float z : stops) {
@@ -730,12 +767,12 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
             String label = (z == Math.floor(z) ? String.valueOf((int) z) : String.valueOf(z)).replace(".0", "") + "×";
             TextView c = chip(label, v -> setZoom((Float) v.getTag(), true));
             c.setTag(z);
-            zoomChips.add(c);
+            zoomChips.add(rot(c));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(50), dp(34)); lp.leftMargin = dp(4); lp.rightMargin = dp(4);
             zoomRow.addView(c, lp);
         }
         if (info.minZoom < 0.99f && zoomChips.isEmpty()) {
-            TextView c = chip(String.format(Locale.US, "%.1f×", info.minZoom), v -> setZoom(info.minZoom, true)); c.setTag(info.minZoom); zoomChips.add(c); zoomRow.addView(c);
+            TextView c = chip(String.format(Locale.US, "%.1f×", info.minZoom), v -> setZoom(info.minZoom, true)); c.setTag(info.minZoom); zoomChips.add(rot(c)); zoomRow.addView(c);
         }
         refresh();
     }
