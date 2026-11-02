@@ -72,6 +72,31 @@ public class SettingsActivity extends Activity {
         c.addView(s);
         if (sub != null) c.addView(text(sub, 11, th.muted, false));
     }
+    private void msSlider(String title, String key, int min, int max, int def) {
+        LinearLayout c = card();
+        TextView t = text(title + ": " + label(p.i(key, def)), 11, th.muted, false);
+        c.addView(t);
+        android.widget.SeekBar sb = new android.widget.SeekBar(this);
+        sb.setMax((max - min) / 10); sb.setProgress((p.i(key, def) - min) / 10);
+        sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar b, int pr, boolean u) { int v = min + pr * 10; t.setText(title + ": " + label(v)); if (u) p.put(key, v); }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar b) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar b) { }
+        });
+        c.addView(sb);
+        c.addView(text("0 = nessuna animazione · tocca il valore per scriverlo", 10, th.muted, false));
+        t.setOnClickListener(v -> {
+            android.widget.EditText e = new android.widget.EditText(this);
+            e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); e.setText(String.valueOf(p.i(key, def)));
+            new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(title + " (ms)").setView(e)
+                .setPositiveButton("OK", (d, w) -> {
+                    try { int v = Math.max(min, Math.min(max, Integer.parseInt(e.getText().toString().trim()))); p.put(key, v); sb.setProgress((v - min) / 10); t.setText(title + ": " + label(v)); }
+                    catch (Exception ignored) { }
+                }).setNegativeButton("ANNULLA", null).show();
+        });
+    }
+    private static String label(int ms) { return ms == 0 ? "OFF" : ms + " ms"; }
+
     private void rebuild() { list.removeAllViews(); build(); }
 
     private void build() {
@@ -89,6 +114,7 @@ public class SettingsActivity extends Activity {
         String[] vl = new String[ShutterFx.VIDEO_KEYS.length];
         for (int i = 0; i < vl.length; i++) { vl[i] = ShutterFx.VIDEO_NAMES[i] + " — " + ShutterFx.VIDEO_DESC[i]; if (ShutterFx.VIDEO_KEYS[i].equals(vfx)) vi = i; }
         choice("EFFETTO AVVIO / STOP VIDEO", vl, vi, i -> p.put("vfx", ShutterFx.VIDEO_KEYS[i]));
+        msSlider("ANIMAZIONE BARRA CANON IN ROTAZIONE (serpente)", "snakeMs", 0, 3000, 900);
         toggle("liveStyle", "Picture Style nel mirino", "Anteprima dal vivo del look scelto (come la simulazione Canon)", true);
 
         section("SCATTO");

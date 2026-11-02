@@ -392,12 +392,22 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         while (d < -180) d += 360;
         uiRot = uiRot + d;
         float oldRot = hud.uiRot;
+        // exact place of the portrait strip, in HUD coordinates
+        int[] ib = new int[2], hb = new int[2];
+        infoBar.getLocationInWindow(ib); hud.getLocationInWindow(hb);
+        if (infoBar.getWidth() > 0 && !infoBar.detached)
+            hud.stripRest.set(ib[0] - hb[0], ib[1] - hb[1], ib[0] - hb[0] + infoBar.getWidth(), ib[1] - hb[1] + infoBar.getHeight());
+        hud.snakeMs = pr.i("snakeMs", 900);
         hud.uiRot = target;
-        if (oldRot != target) hud.crawl(oldRot, target);   // Canon strip crawls along the edges
         boolean detach = target != 0;
         infoBar.detached = detach;
-        infoBar.animate().alpha(detach ? 0f : 1f).setDuration(200).start();
         infoBar.setClickable(!detach);
+        infoBar.animate().cancel();
+        if (oldRot != target && hud.snakeMs > 0) {
+            hud.crawl(oldRot, target);                       // the strip slithers along the edges
+            if (detach) infoBar.setAlpha(0f);                // the snake takes its exact place at once
+            else infoBar.animate().alpha(1f).setStartDelay(Math.max(0, hud.snakeMs - 60)).setDuration(60).start();
+        } else infoBar.setAlpha(detach ? 0f : 1f);
         refresh();
         for (View v : rotatables) {
             float s = fitScale(v, uiRot);

@@ -42,75 +42,118 @@ public class HudView extends View {
     public float uiRot = 0;                      // texts turn with the phone
     public InfoBar strip;                        // drawn here, rotated, when the phone is sideways
 
-    /* ======== caterpillar crawl of the Canon strip along the viewfinder edges ======== */
-    static final long SNAKE_MS = 1050;
-    static final int SNAKE_COLS = 48;
-    private Bitmap snakeBmp; private long snakeStart; private float snakeFrom, snakeTo;
-    private final float[] snakeVerts = new float[(SNAKE_COLS + 1) * 2 * 2];
+    /* ======== snake crawl of the Canon strip along the viewfinder edges ======== */
+    public long snakeMs = 900;                 // set from the settings
+    public final RectF stripRest = new RectF(); // where the real strip sits in portrait (HUD coords)
+    static final int SNAKE_COLS = 72;
+    private Bitmap snakeA, snakeB; private long snakeStart; private float snakeFrom, snakeTo;
+    private final float[] meshV = new float[(SNAKE_COLS + 1) * 2 * 2];
     private final Paint snakePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private PathMeasure pm; private float total;
 
-    /** Starts the crawl from the edge used at rotation 'from' to the edge of rotation 'to'. */
+    private boolean crawling(long now) { return snakeA != null && now - snakeStart < snakeMs; }
+
+    /** Starts the crawl from the strip position of rotation 'from' to the one of rotation 'to'. */
     public void crawl(float from, float to) {
         if (strip == null || view.isEmpty() || from == to) return;
         float sh = strip.stripHeight();
-        int len = (int) Math.max(view.width(), view.height());
-        if (snakeBmp != null) snakeBmp.recycle();
-        snakeBmp = Bitmap.createBitmap(Math.max(1, len), Math.max(1, (int) sh), Bitmap.Config.ARGB_8888);
-        strip.drawStrip(new Canvas(snakeBmp), len, sh);
+        recycleSnake();
+        snakeA = render(restLen(from), sh);
+        snakeB = render(restLen(to), sh);
         snakeFrom = from; snakeTo = to; snakeStart = SystemClock.uptimeMillis();
-        postInvalidateOnAnimation();
-    }
-
-    /** n-step "inchworm" easing: advances in bursts. */
-    private static float stair(float x, int n) {
-        x = Math.max(0, Math.min(1, x));
-        float k = x * n, f = k - (float) Math.floor(k);
-        f = f * f * (3 - 2 * f);
-        return Math.min(1, ((float) Math.floor(k) + f) / n);
-    }
-
-    private void drawSnake(Canvas c, float t) {
-        float sh = strip.stripHeight();
-        RectF r = new RectF(view); r.inset(sh / 2 + dp(2), sh / 2 + dp(2));
+        // centreline loop: inner edges of the viewfinder, bottom edge exactly on the portrait strip
+        float bottom = stripRest.isEmpty() ? view.bottom - sh / 2 : stripRest.centerY();
+        RectF r = new RectF(view.left + sh / 2, view.top + sh / 2, view.right - sh / 2, bottom);
         Path path = new Path();
         path.addRoundRect(r, sh * 0.9f, sh * 0.9f, Path.Direction.CCW);
-        PathMeasure pm = new PathMeasure(path, true);
-        float total = pm.getLength();
-        if (total <= 0) return;
-        float sFrom = nearestS(pm, total, edgeMid(r, snakeFrom)), sTo = nearestS(pm, total, edgeMid(r, snakeTo));
+        pm = new PathMeasure(path, true);
+        total = pm.getLength();
+        postInvalidateOnAnimation();
+    }
+    private void recycleSnake() { if (snakeA != null) snakeA.recycle(); if (snakeB != null) snakeB.recycle(); snakeA = snakeB = null; }
+    private Bitmap render(float len, float sh) {
+        Bitmap b = Bitmap.createBitmap(Math.max(1, (int) len), Math.max(1, (int) sh), Bitmap.Config.ARGB_8888);
+        strip.drawStrip(new Canvas(b), len, sh);
+        return b;
+    }
+    private float restLen(float rot) {
+        if (rot == 0 && !stripRest.isEmpty()) return stripRest.width();
+        return Math.abs(rot) == 90 ? view.height() : view.width();
+    }
+
+    /** Exact resting vertices of the strip for a rotation (column u → top/bottom points). */
+    private void restAt(float rot, float u, float sh, float[] out) {
+        if (rot == 0 && !stripRest.isEmpty()) {
+            float x = stripRest.left + stripRest.width() * u;
+            out[0] = x; out[1] = stripRest.top; out[2] = x; out[3] = stripRest.bottom;
+            return;
+        }
+        RectF uf = userFrame(rot);
+        float ux = uf.left + uf.width() * u, top = uf.bottom - sh, bot = uf.bottom;
+        double a = Math.toRadians(rot); float cs = (float) Math.cos(a), sn = (float) Math.sin(a);
+        float cx = view.centerX(), cy = view.centerY();
+        out[0] = cx + ux * cs - top * sn; out[1] = cy + ux * sn + top * cs;
+        out[2] = cx + ux * cs - bot * sn; out[3] = cy + ux * sn + bot * cs;
+    }
+
+    private static float easeInOut(float x) {
+        x = Math.max(0, Math.min(1, x));
+        return x < 0.5f ? 4 * x * x * x : 1 - (float) Math.pow(-2 * x + 2, 3) / 2;
+    }
+    private static float smooth(float a, float b, float x) { float t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+
+    private void drawSnake(Canvas c, float t) {
+        if (pm == null || total <= 0) return;
+        float sh = strip.stripHeight();
+        float sFrom = nearestS(edgeMid(snakeFrom, sh)), sTo = nearestS(edgeMid(snakeTo, sh));
         float delta = sTo - sFrom;
         if (delta > total / 2) delta -= total; else if (delta < -total / 2) delta += total;
-        float dir = Math.signum(delta == 0 ? 1 : delta);
-        float lSrc = edgeLen(r, snakeFrom), lDst = edgeLen(r, snakeTo);
-        // ghosts first (the drag trail), then the body
+        float dir = delta >= 0 ? 1 : -1;
+        float lSrc = restLen(snakeFrom), lDst = restLen(snakeTo);
+        float[] pos = new float[2], tan = new float[2], rs = new float[4], rd = new float[4];
+        // ghosts first (the trail), then the body
         for (int g = 2; g >= 0; g--) {
-            float tt = t - g * 0.07f;
-            if (tt <= 0) continue;
-            float front0 = sFrom + dir * lSrc / 2, back0 = sFrom - dir * lSrc / 2;
-            float front = front0 + (delta + dir * (lDst - lSrc) / 2) * stair(tt, 3);
-            float back = back0 + (delta - dir * (lDst - lSrc) / 2) * stair((tt - 0.14f) / 0.86f, 3);
+            float tt = Math.max(0, t - g * 0.06f);
+            float head = easeInOut(tt), tail = easeInOut(Math.max(0, tt - 0.07f) / 0.93f);
+            float len = lSrc + (lDst - lSrc) * easeInOut(tt);
+            float centreHead = sFrom + delta * head, centreTail = sFrom + delta * tail;
+            float front = centreHead + dir * len / 2, back = centreTail - dir * len / 2;
             float lo = Math.min(front, back), hi = Math.max(front, back);
-            float squeeze = 1 + 0.22f * (float) Math.sin(Math.PI * Math.min(1, t * 1.2f)) * Math.abs((float) Math.sin(3 * Math.PI * t));
-            float[] pos = new float[2], tan = new float[2];
-            int k = 0;
+            // blend weight: exact rest shape at both ends, path shape in between
+            float onPath = smooth(0f, 0.16f, tt) * (1 - smooth(0.84f, 1f, tt));
+            float env = (float) Math.sin(Math.PI * tt);                      // slither strength
+            float amp = sh * 0.32f * env;
+            int k = 0, half = (SNAKE_COLS + 1) * 2;
             for (int i = 0; i <= SNAKE_COLS; i++) {
-                float s = lo + (hi - lo) * i / SNAKE_COLS;
+                float u = i / (float) SNAKE_COLS;
+                float s = lo + (hi - lo) * u;
                 s = ((s % total) + total) % total;
                 pm.getPosTan(s, pos, tan);
                 float nx = -tan[1], ny = tan[0];
                 if ((view.centerX() - pos[0]) * nx + (view.centerY() - pos[1]) * ny < 0) { nx = -nx; ny = -ny; }
-                float half = sh / 2 * squeeze;
-                snakeVerts[k++] = pos[0] + nx * half; snakeVerts[k++] = pos[1] + ny * half;        // bitmap top row → inner side
-                snakeVerts[(SNAKE_COLS + 1) * 2 + k - 2] = pos[0] - nx * half;
-                snakeVerts[(SNAKE_COLS + 1) * 2 + k - 1] = pos[1] - ny * half;
+                // travelling wave along the body, tapered at head and tail
+                float taper = (float) Math.sqrt(Math.sin(Math.PI * u));
+                float wave = amp * taper * (float) Math.sin(2 * Math.PI * (u * 1.6f) - tt * 18f * dir);
+                float px = pos[0] + nx * wave, py = pos[1] + ny * wave;
+                float tx = px + nx * sh / 2, ty = py + ny * sh / 2, bx = px - nx * sh / 2, by = py - ny * sh / 2;
+                restAt(snakeFrom, u, sh, rs); restAt(snakeTo, u, sh, rd);
+                float rw = smooth(0.5f, 0.51f, tt);                               // which rest shape is near
+                float rtx = rs[0] + (rd[0] - rs[0]) * rw, rty = rs[1] + (rd[1] - rs[1]) * rw;
+                float rbx = rs[2] + (rd[2] - rs[2]) * rw, rby = rs[3] + (rd[3] - rs[3]) * rw;
+                meshV[k] = rtx + (tx - rtx) * onPath; meshV[k + 1] = rty + (ty - rty) * onPath;
+                meshV[half + k] = rbx + (bx - rbx) * onPath; meshV[half + k + 1] = rby + (by - rby) * onPath;
+                k += 2;
             }
-            snakePaint.setAlpha(g == 0 ? 255 : g == 1 ? 70 : 32);
-            c.drawBitmapMesh(snakeBmp, SNAKE_COLS, 1, snakeVerts, 0, null, 0, snakePaint);
-            if (g == 0) {
-                // neon head
+            int alpha = g == 0 ? 255 : g == 1 ? 80 : 36;
+            float mix = easeInOut(tt);
+            snakePaint.setAlpha((int) (alpha * (1 - mix)));
+            c.drawBitmapMesh(snakeA, SNAKE_COLS, 1, meshV, 0, null, 0, snakePaint);
+            snakePaint.setAlpha((int) (alpha * mix));
+            c.drawBitmapMesh(snakeB, SNAKE_COLS, 1, meshV, 0, null, 0, snakePaint);
+            if (g == 0 && onPath > 0.05f) {
                 float hs = ((front % total) + total) % total;
                 pm.getPosTan(hs, pos, tan);
-                p.setStyle(Paint.Style.FILL); p.setColor(th.accent);
+                p.setStyle(Paint.Style.FILL); p.setColor(Widgets.a(th.accent, (int) (255 * onPath)));
                 p.setShadowLayer(dp(10), 0, 0, th.accent);
                 c.drawCircle(pos[0], pos[1], dp(3.5f), p);
                 p.clearShadowLayer();
@@ -119,17 +162,17 @@ public class HudView extends View {
         snakePaint.setAlpha(255);
     }
 
-    private static float[] edgeMid(RectF r, float rot) {
-        if (rot == -90) return new float[]{r.right, r.centerY()};
-        if (rot == 90) return new float[]{r.left, r.centerY()};
-        if (Math.abs(rot) == 180) return new float[]{r.centerX(), r.top};
-        return new float[]{r.centerX(), r.bottom};
+    /** Where the strip centre rests on the loop for a rotation. */
+    private float[] edgeMid(float rot, float sh) {
+        if (rot == -90) return new float[]{view.right - sh / 2, view.centerY()};
+        if (rot == 90) return new float[]{view.left + sh / 2, view.centerY()};
+        if (Math.abs(rot) == 180) return new float[]{view.centerX(), view.top + sh / 2};
+        return new float[]{stripRest.isEmpty() ? view.centerX() : stripRest.centerX(), stripRest.isEmpty() ? view.bottom - sh / 2 : stripRest.centerY()};
     }
-    private static float edgeLen(RectF r, float rot) { return Math.abs(rot) == 90 ? r.height() : r.width(); }
-    private static float nearestS(PathMeasure pm, float total, float[] q) {
+    private float nearestS(float[] q) {
         float[] pos = new float[2]; float best = 0, bd = Float.MAX_VALUE;
-        for (int i = 0; i < 400; i++) {
-            float s = total * i / 400f; pm.getPosTan(s, pos, null);
+        for (int i = 0; i < 600; i++) {
+            float s = total * i / 600f; pm.getPosTan(s, pos, null);
             float d = (pos[0] - q[0]) * (pos[0] - q[0]) + (pos[1] - q[1]) * (pos[1] - q[1]);
             if (d < bd) { bd = d; best = s; }
         }
@@ -137,8 +180,9 @@ public class HudView extends View {
     }
 
     /** Viewfinder rect expressed in the rotated (user) frame, centred on the origin. */
-    private RectF userFrame() {
-        boolean side = Math.abs(uiRot) == 90;
+    private RectF userFrame() { return userFrame(uiRot); }
+    private RectF userFrame(float rot) {
+        boolean side = Math.abs(rot) == 90;
         float w = side ? view.height() : view.width(), h = side ? view.width() : view.height();
         return new RectF(-w / 2, -h / 2, w / 2, h / 2);
     }                     // magnify factor shown as label
@@ -174,15 +218,15 @@ public class HudView extends View {
         c.translate(view.centerX(), view.centerY()); c.rotate(uiRot);
         if (level) drawLevel(c, uf);
         if (histogram && an != null) drawHistogram(c, uf);
-        boolean crawling = snakeBmp != null && now - snakeStart < SNAKE_MS;
+        boolean crawling = crawling(now);
         if (strip != null && uiRot != 0 && !crawling) {
             float sh = strip.stripHeight();
             c.save(); c.translate(uf.left, uf.bottom - sh); strip.drawStrip(c, uf.width(), sh); c.restore();
             if (strip.levelBlink) anim = true;
         }
         c.restore();
-        if (crawling) { drawSnake(c, (now - snakeStart) / (float) SNAKE_MS); anim = true; }
-        else if (snakeBmp != null) { snakeBmp.recycle(); snakeBmp = null; }
+        if (crawling) { drawSnake(c, (now - snakeStart) / (float) Math.max(1, snakeMs)); anim = true; }
+        else if (snakeA != null) recycleSnake();
         // faces
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(1.5f)); p.setColor(a(th.secondary, 220));
         for (RectF f : faces) bracket(c, f, dp(10));
