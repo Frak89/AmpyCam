@@ -306,6 +306,7 @@ public class CameraEngine {
             dev.createCaptureSession(outs, new CameraCaptureSession.StateCallback() {
                 @Override public void onConfigured(CameraCaptureSession s) {
                     session = s;
+                    tapLock = false; tapRegions = null; h.removeCallbacks(resumeAf);
                     try {
                         preview = dev.createCaptureRequest(kind >= 1 && kind <= 2 ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW);
                         preview.addTarget(previewSurface);
@@ -348,12 +349,68 @@ public class CameraEngine {
     /* ------------------------------------------------------------------ controls */
 
     public void setControls(Controls c) {
+        Controls old = ctl;
         ctl = c;
+        if (h == null) return;
+        boolean afChanged = old == null || old.af != c.af || old.video != c.video;
+        h.post(() -> {
+            if (session == null || preview == null) return;
+            try {
+                apply(preview, c, false);
+                if (afChanged) { tapLock = false; h.removeCallbacks(resumeAf); restartAf(); }
+                else session.setRepeatingRequest(preview.build(), previewCb, h);
+            }
+            catch (Exception e) { Log.w(TAG, "controls", e); }
+        });
+    }
+
+    /* ---------- autofocus ---------- */
+    private volatile boolean tapLock;              // focus locked on a tapped point
+    private volatile MeteringRectangle[] tapRegions;
+
+    /** CANCEL clears any earlier lock so continuous AF scans again; then repeat with IDLE. */
+    private void restartAf() throws CameraAccessException {
+        preview.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+        session.capture(preview.build(), previewCb, h);
+        preview.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+        session.setRepeatingRequest(preview.build(), previewCb, h);
+    }
+
+    private final Runnable resumeAf = () -> {
+        if (session == null || preview == null) return;
+        tapLock = false; tapRegions = null;
+        try { apply(preview, ctl, false); restartAf(); } catch (Exception e) { Log.w(TAG, "resumeAf", e); }
+    };
+
+    /** Back to automatic continuous AF (after a tap, a mode change, a camera switch…). */
+    public void resumeContinuousAf() { if (h != null) h.post(() -> { h.removeCallbacks(resumeAf); resumeAf.run(); }); }
+
+    /**
+     * Tap to focus (Pixel style): focus once on the point, keep it for holdMs, then go back to continuous AF.
+     * holdMs <= 0 keeps the lock (AE/AF lock, Canon One Shot) until resumeContinuousAf().
+     * With Canon Servo (servoTrack) the point is tracked continuously instead.
+     */
+    public void tapFocus(MeteringRectangle[] regions, long holdMs, boolean servoTrack) {
         if (h == null) return;
         h.post(() -> {
             if (session == null || preview == null) return;
-            try { apply(preview, c, false); session.setRepeatingRequest(preview.build(), previewCb, h); }
-            catch (Exception e) { Log.w(TAG, "controls", e); }
+            h.removeCallbacks(resumeAf);
+            try {
+                if (servoTrack) {
+                    tapLock = false; tapRegions = regions;
+                    apply(preview, ctl, false); restartAf();
+                    return;
+                }
+                tapLock = true; tapRegions = regions;
+                apply(preview, ctl, false);
+                preview.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+                session.capture(preview.build(), null, h);
+                preview.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START);
+                session.capture(preview.build(), previewCb, h);
+                preview.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+                session.setRepeatingRequest(preview.build(), previewCb, h);
+                if (holdMs > 0) h.postDelayed(resumeAf, holdMs);
+            } catch (Exception e) { Log.w(TAG, "tapFocus", e); }
         });
     }
 
@@ -408,7 +465,6 @@ public class CameraEngine {
             b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Math.max(info.evMin, Math.min(info.evMax, c.evIdx)));
             b.set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock);
             b.set(CaptureRequest.FLASH_MODE, info.flash && c.flash == CamState.FL_TORCH ? CameraMetadata.FLASH_MODE_TORCH : CameraMetadata.FLASH_MODE_OFF);
-            if (c.aeRegions != null) b.set(CaptureRequest.CONTROL_AE_REGIONS, c.aeRegions);
             if (c.video || c.night) b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFps(c.night ? 15 : 30));
         }
         // white balance
@@ -434,12 +490,20 @@ public class CameraEngine {
         if (c.af == CamState.AF_MF && info.minFocus > 0) {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
             b.set(CaptureRequest.LENS_FOCUS_DISTANCE, Math.max(0, Math.min(info.minFocus, c.focus)));
-        } else if (c.af == CamState.AF_ONESHOT && info.minFocus > 0) {
+        } else if ((tapLock || c.af == CamState.AF_ONESHOT) && info.minFocus > 0) {
             b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO);
         } else {
             b.set(CaptureRequest.CONTROL_AF_MODE, c.video ? CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO : CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
         }
-        if (c.afRegions != null) b.set(CaptureRequest.CONTROL_AF_REGIONS, c.afRegions);
+        // AF / AE regions: tapped point, Canon AF point, or "camera decides" (weight 0 resets older regions kept by the builder)
+        MeteringRectangle[] afr = tapRegions != null ? tapRegions : c.afRegions;
+        Integer maxAf = info.cc.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+        Integer maxAe = info.cc.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE);
+        if (maxAf != null && maxAf > 0) b.set(CaptureRequest.CONTROL_AF_REGIONS, afr != null ? afr : dontCare());
+        if (maxAe != null && maxAe > 0 && !(c.aeManual && info.manualSensor)) {
+            MeteringRectangle[] aer = c.aeRegions != null ? c.aeRegions : tapRegions;
+            b.set(CaptureRequest.CONTROL_AE_REGIONS, aer != null ? aer : dontCare());
+        }
         if (info.faceDetect) b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, c.faces ? CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE : CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF);
         b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, c.video && c.stab ? CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON : CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF);
         b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON);
@@ -447,6 +511,11 @@ public class CameraEngine {
             b.set(CaptureRequest.EDGE_MODE, c.sharp ? CameraMetadata.EDGE_MODE_HIGH_QUALITY : CameraMetadata.EDGE_MODE_OFF);
             b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY);
         }
+    }
+
+    private MeteringRectangle[] dontCare() {
+        Rect a = info.active != null ? info.active : new Rect(0, 0, 1, 1);
+        return new MeteringRectangle[]{new MeteringRectangle(0, 0, a.width() - 1, a.height() - 1, MeteringRectangle.METERING_WEIGHT_DONT_CARE)};
     }
 
     private Range<Integer> bestFps(int min) {

@@ -565,7 +565,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
             float bg = bb * (ref[2] / ref[1]) / (k[2] / k[1]);
             c.wbGains = new RggbChannelVector(rg, 1, 1, bg);
         }
-        c.af = st.mode == CamState.M_VIDEO && st.af == CamState.AF_ONESHOT ? CamState.AF_SERVO : st.af;
+        c.af = proAf();
         c.focus = st.focus;
         c.zoom = zoom;
         c.video = st.mode == CamState.M_VIDEO;
@@ -573,11 +573,11 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         c.stab = pr.b("stab", true);
         c.sharp = !st.style.equals("neutral") && !st.style.equals("faithful");
         c.faces = pr.b("faces", true);
-        if (st.afPointSet) {
+        if (st.afPointSet && st.isPro()) {
             MeteringRectangle r = region(st.afX, st.afY, st.metering == CamState.MET_SPOT ? 0.04f : 0.1f);
             if (r != null) {
                 c.afRegions = new MeteringRectangle[]{r};
-                if (st.metering == CamState.MET_PARTIAL || st.metering == CamState.MET_SPOT || !st.isPro()) c.aeRegions = new MeteringRectangle[]{r};
+                if (st.metering == CamState.MET_PARTIAL || st.metering == CamState.MET_SPOT) c.aeRegions = new MeteringRectangle[]{r};
             }
         } else if (st.metering == CamState.MET_CENTER) {
             MeteringRectangle r = region(0.5f, 0.5f, 0.25f);
@@ -635,6 +635,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
             @Override public void onLongPress(MotionEvent e) {
                 st.aeLock = !st.aeLock; hud.afLocked = st.aeLock;
                 if (st.aeLock) tapFocus(e.getX(), e.getY());
+                else { if (!st.isPro()) { st.afPointSet = false; hud.af.setEmpty(); } eng.resumeContinuousAf(); }
                 hud.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                 hud.showToast(st.aeLock ? "✱ AE/AF LOCK" : "AE/AF SBLOCCATO");
                 push(); refresh();
@@ -666,6 +667,15 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         });
     }
 
+    /** Canon AF modes only in PRO; Photo / Portrait / Night / Video always use automatic continuous AF. */
+    private int proAf() {
+        if (!st.isPro() || st.effDial() == CamState.D_AUTO) return CamState.AF_SERVO;
+        if (st.mode == CamState.M_VIDEO && st.af == CamState.AF_ONESHOT) return CamState.AF_SERVO;
+        return st.af;
+    }
+
+    private final Runnable afPointExpire = () -> { if (!st.isPro() && !st.aeLock) { st.afPointSet = false; hud.af.setEmpty(); hud.exposureSlider = Float.NaN; hud.invalidate(); } };
+
     private void tapFocus(float x, float y) {
         if (!captureRect.contains(x, y)) return;
         st.afX = (x - previewRect.left) / previewRect.width();
@@ -677,7 +687,17 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         hud.afState = st.af == CamState.AF_MF ? 0 : 1;
         hud.exposureSlider = st.isPro() ? Float.NaN : st.ev / 2;
         push();
-        if (st.af == CamState.AF_ONESHOT) eng.triggerAf();
+        int af = proAf();
+        if (af != CamState.AF_MF) {
+            MeteringRectangle r = region(st.afX, st.afY, 0.1f);
+            if (r != null) {
+                MeteringRectangle[] rs = {r};
+                if (st.aeLock) eng.tapFocus(rs, 0, false);                          // AE/AF lock: hold
+                else if (st.isPro() && af == CamState.AF_ONESHOT) eng.tapFocus(rs, 0, false);
+                else if (st.isPro() && af == CamState.AF_SERVO) eng.tapFocus(rs, 0, true); // Canon Servo: track the point
+                else { eng.tapFocus(rs, 5000, false); ui.removeCallbacks(afPointExpire); ui.postDelayed(afPointExpire, 5200); }
+            }
+        }
         hud.invalidate();
     }
 
@@ -723,6 +743,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
     /* ================================================================ modes */
 
     private void setMode(int m) {
+        if (!eng.isRecording()) { st.afPointSet = false; st.aeLock = false; hud.afLocked = false; hud.af.setEmpty(); eng.resumeContinuousAf(); }
         if (eng.isRecording()) { carousel.setSelected(st.mode); return; }
         int oldKind = sessionKind();
         float oldAspect = aspect();
@@ -873,7 +894,10 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
 
     private void onHalfPress() {
         if (st.mode == CamState.M_VIDEO) return;
-        if (st.af == CamState.AF_ONESHOT && !st.aeLock) eng.triggerAf();
+        if (proAf() == CamState.AF_ONESHOT && !st.aeLock) {
+            MeteringRectangle r = region(st.afPointSet ? st.afX : 0.5f, st.afPointSet ? st.afY : 0.5f, 0.1f);
+            if (r != null) eng.tapFocus(new MeteringRectangle[]{r}, 0, false);
+        }
     }
 
     private void onShutter() {
