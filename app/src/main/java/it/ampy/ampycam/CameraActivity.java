@@ -157,6 +157,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         hud.grid = pr.i("grid", 1); hud.level = pr.b("level", true); hud.histogram = pr.b("histogram", true);
         if (perms()) maybeOpen();
         startAnalysis();
+        loadLastMedia();
     }
 
     @Override protected void onPause() {
@@ -193,8 +194,13 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.CAMERA);
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED && !pr.b("askedAudio", false)) need.add(Manifest.permission.RECORD_AUDIO);
         if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (!pr.b("askedMedia", false)) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) { need.add(Manifest.permission.READ_MEDIA_IMAGES); need.add(Manifest.permission.READ_MEDIA_VIDEO); }
+            } else if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
         if (need.isEmpty()) return true;
-        pr.put("askedAudio", true);
+        pr.put("askedAudio", true); pr.put("askedMedia", true);
         requestPermissions(need.toArray(new String[0]), 7);
         return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
     }
@@ -202,6 +208,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
     @Override public void onRequestPermissionsResult(int rc, String[] p, int[] g) {
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) maybeOpen();
         else hud.showToast("SERVE IL PERMESSO FOTOCAMERA");
+        loadLastMedia();
     }
 
     private int sessionKind() { return st.mode == CamState.M_VIDEO ? 1 : st.mode == CamState.M_NIGHT ? 3 : 0; }
@@ -398,6 +405,8 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         if (infoBar.getWidth() > 0 && !infoBar.detached)
             hud.stripRest.set(ib[0] - hb[0], ib[1] - hb[1], ib[0] - hb[0] + infoBar.getWidth(), ib[1] - hb[1] + infoBar.getHeight());
         hud.snakeMs = pr.i("snakeMs", 900);
+        hud.snakeStyle = pr.i("snakeStyle", 0); hud.snakeEase = pr.i("snakeEase", 0); hud.snakeAmp = pr.i("snakeAmp", 32);
+        hud.snakeWaves = pr.i("snakeWaves", 16); hud.snakeTrail = pr.i("snakeTrail", 2); hud.snakeWaveSpeed = pr.i("snakeWaveSpeed", 18);
         hud.uiRot = target;
         boolean detach = target != 0;
         infoBar.detached = detach;
@@ -1278,8 +1287,44 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         refresh();
     }
 
+    /** Newest photo or video in DCIM/AmpyCam (survives restarts, follows deletions made in the gallery). */
+    private void loadLastMedia() {
+        saver.execute(() -> {
+            Object[] best = null; // {uri, dateAdded, isVideo}
+            for (int k = 0; k < 2; k++) {
+                boolean video = k == 1;
+                Uri coll = video ? android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI : android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                String sel; String[] args;
+                if (Build.VERSION.SDK_INT >= 29) { sel = android.provider.MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"; args = new String[]{"DCIM/AmpyCam%"}; }
+                else { sel = android.provider.MediaStore.MediaColumns.DATA + " LIKE ?"; args = new String[]{"%/DCIM/AmpyCam/%"}; }
+                String[] cols = {android.provider.MediaStore.MediaColumns._ID, android.provider.MediaStore.MediaColumns.DATE_ADDED, android.provider.MediaStore.MediaColumns.MIME_TYPE};
+                try (android.database.Cursor c = getContentResolver().query(coll, cols, sel, args, android.provider.MediaStore.MediaColumns.DATE_ADDED + " DESC")) {
+                    while (c != null && c.moveToNext()) {
+                        String mime = c.getString(2);
+                        if (mime != null && mime.contains("dng")) continue;          // show the JPEG of a RAW+JPEG pair
+                        long when = c.getLong(1);
+                        if (best == null || when > (Long) best[1]) best = new Object[]{android.content.ContentUris.withAppendedId(coll, c.getLong(0)), when, video};
+                        break;
+                    }
+                } catch (Exception ignored) { }
+            }
+            if (best == null) { ui.post(() -> { lastUri = null; thumb.setBitmap(null); }); return; }
+            Uri u = (Uri) best[0]; boolean video = (Boolean) best[2];
+            if (u.equals(lastUri)) return;
+            Bitmap b = null;
+            try {
+                if (Build.VERSION.SDK_INT >= 29) b = getContentResolver().loadThumbnail(u, new Size(320, 320), null);
+                else if (video) b = ImageSaver.videoThumb(this, u);
+                else { android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options(); o.inSampleSize = 8;
+                    try (java.io.InputStream in = getContentResolver().openInputStream(u)) { b = android.graphics.BitmapFactory.decodeStream(in, null, o); } }
+            } catch (Exception ignored) { }
+            Bitmap fb = b;
+            ui.post(() -> { lastUri = u; lastIsVideo = video; if (fb != null) thumb.setBitmap(fb); });
+        });
+    }
+
     private void openLast() {
-        if (lastUri == null) { hud.showToast("NESSUNA FOTO IN QUESTA SESSIONE"); return; }
+        if (lastUri == null) { hud.showToast("NESSUNA FOTO IN DCIM/AMPYCAM"); return; }
         try {
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(lastUri, lastIsVideo ? "video/mp4" : "image/jpeg");

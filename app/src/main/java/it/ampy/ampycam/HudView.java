@@ -44,6 +44,9 @@ public class HudView extends View {
 
     /* ======== snake crawl of the Canon strip along the viewfinder edges ======== */
     public long snakeMs = 900;                 // set from the settings
+    public static final String[] SNAKE_STYLES = {"SERPENTE", "BRUCO", "ELASTICO", "NASTRO 3D", "GLITCH", "DIRETTO"};
+    public static final String[] SNAKE_EASES = {"MORBIDO", "ELASTICO", "RIMBALZO", "LINEARE"};
+    public int snakeStyle = 0, snakeEase = 0, snakeAmp = 32, snakeWaves = 16, snakeTrail = 2, snakeWaveSpeed = 18;
     public final RectF stripRest = new RectF(); // where the real strip sits in portrait (HUD coords)
     static final int SNAKE_COLS = 72;
     private Bitmap snakeA, snakeB; private long snakeStart; private float snakeFrom, snakeTo;
@@ -112,9 +115,15 @@ public class HudView extends View {
         float lSrc = restLen(snakeFrom), lDst = restLen(snakeTo);
         float[] pos = new float[2], tan = new float[2], rs = new float[4], rd = new float[4];
         // ghosts first (the trail), then the body
-        for (int g = 2; g >= 0; g--) {
+        int style = snakeStyle;
+        long gq = SystemClock.uptimeMillis() / 50;
+        for (int g = Math.max(0, snakeTrail); g >= 0; g--) {
             float tt = Math.max(0, t - g * 0.06f);
-            float head = easeInOut(tt), tail = easeInOut(Math.max(0, tt - 0.07f) / 0.93f);
+            float lag = style == 1 ? 0.14f : style == 2 ? 0.12f : 0.07f;
+            float head, tail;
+            if (style == 1) { head = stair(tt, 3); tail = stair((tt - lag) / (1 - lag), 3); }
+            else if (style == 2) { head = ease(tt, 1); tail = ease(Math.max(0, tt - lag) / (1 - lag), 0); }
+            else { head = ease(tt, snakeEase); tail = ease(Math.max(0, tt - lag) / (1 - lag), snakeEase); }
             float len = lSrc + (lDst - lSrc) * easeInOut(tt);
             float centreHead = sFrom + delta * head, centreTail = sFrom + delta * tail;
             float front = centreHead + dir * len / 2, back = centreTail - dir * len / 2;
@@ -122,7 +131,10 @@ public class HudView extends View {
             // blend weight: exact rest shape at both ends, path shape in between
             float onPath = smooth(0f, 0.16f, tt) * (1 - smooth(0.84f, 1f, tt));
             float env = (float) Math.sin(Math.PI * tt);                      // slither strength
-            float amp = sh * 0.32f * env;
+            float amp = sh * snakeAmp / 100f * env;
+            if (style == 1 || style == 4 || style == 5) amp = 0;
+            if (style == 2) amp *= 0.5f;
+            float waves = snakeWaves / 10f, wspeed = snakeWaveSpeed;
             int k = 0, half = (SNAKE_COLS + 1) * 2;
             for (int i = 0; i <= SNAKE_COLS; i++) {
                 float u = i / (float) SNAKE_COLS;
@@ -133,9 +145,17 @@ public class HudView extends View {
                 if ((view.centerX() - pos[0]) * nx + (view.centerY() - pos[1]) * ny < 0) { nx = -nx; ny = -ny; }
                 // travelling wave along the body, tapered at head and tail
                 float taper = (float) Math.sqrt(Math.sin(Math.PI * u));
-                float wave = amp * taper * (float) Math.sin(2 * Math.PI * (u * 1.6f) - tt * 18f * dir);
+                float phase = (float) (2 * Math.PI * (u * waves) - tt * wspeed * dir);
+                float wave = amp * taper * (float) Math.sin(phase);
+                float hw = sh / 2;
+                if (style == 1) hw *= 1 + 0.28f * env * (float) Math.sin(Math.PI * u) * Math.abs((float) Math.sin(3 * Math.PI * tt + u * 4)); // caterpillar humps
+                if (style == 3) { float tw = (float) Math.cos(phase * 0.5f); hw *= (1 - env) + env * tw; }                       // ribbon twist
+                if (style == 4 && env > 0.05f) {                                                                                    // glitch jitter
+                    int hsh = (int) ((gq * 31 + i / 6) * 2654435761L >>> 16) & 1023;
+                    if (hsh < 260) wave = (hsh / 260f - 0.5f) * sh * 0.9f * env;
+                }
                 float px = pos[0] + nx * wave, py = pos[1] + ny * wave;
-                float tx = px + nx * sh / 2, ty = py + ny * sh / 2, bx = px - nx * sh / 2, by = py - ny * sh / 2;
+                float tx = px + nx * hw, ty = py + ny * hw, bx = px - nx * hw, by = py - ny * hw;
                 restAt(snakeFrom, u, sh, rs); restAt(snakeTo, u, sh, rd);
                 float rw = smooth(0.5f, 0.51f, tt);                               // which rest shape is near
                 float rtx = rs[0] + (rd[0] - rs[0]) * rw, rty = rs[1] + (rd[1] - rs[1]) * rw;
@@ -144,8 +164,10 @@ public class HudView extends View {
                 meshV[half + k] = rbx + (bx - rbx) * onPath; meshV[half + k + 1] = rby + (by - rby) * onPath;
                 k += 2;
             }
-            int alpha = g == 0 ? 255 : g == 1 ? 80 : 36;
+            int alpha = g == 0 ? 255 : Math.max(18, 90 / g);
             float mix = easeInOut(tt);
+            if (style == 4 && g > 0) snakePaint.setColorFilter(new android.graphics.LightingColorFilter(g % 2 == 1 ? 0xff2040 : 0x20e0ff, 0));
+            else snakePaint.setColorFilter(null);
             snakePaint.setAlpha((int) (alpha * (1 - mix)));
             c.drawBitmapMesh(snakeA, SNAKE_COLS, 1, meshV, 0, null, 0, snakePaint);
             snakePaint.setAlpha((int) (alpha * mix));
@@ -160,6 +182,34 @@ public class HudView extends View {
             }
         }
         snakePaint.setAlpha(255);
+        snakePaint.setColorFilter(null);
+    }
+
+    /** 0 soft (cubic in-out), 1 elastic, 2 bounce, 3 linear. */
+    private static float ease(float x, int kind) {
+        x = Math.max(0, Math.min(1, x));
+        switch (kind) {
+            case 1: {                                   // elastic: overshoots and settles, smooth start
+                float y = x * x * (3 - 2 * x);
+                if (y <= 0 || y >= 1) return y;
+                return (float) (Math.pow(2, -10 * y) * Math.sin((y * 10 - 0.75) * (2 * Math.PI / 3)) + 1);
+            }
+            case 2: {
+                float n = 7.5625f, d = 2.75f;
+                if (x < 1 / d) return n * x * x;
+                if (x < 2 / d) { x -= 1.5f / d; return n * x * x + 0.75f; }
+                if (x < 2.5 / d) { x -= 2.25f / d; return n * x * x + 0.9375f; }
+                x -= 2.625f / d; return n * x * x + 0.984375f;
+            }
+            case 3: return x;
+            default: return easeInOut(x);
+        }
+    }
+    private static float stair(float x, int n) {
+        x = Math.max(0, Math.min(1, x));
+        float k = x * n, f = k - (float) Math.floor(k);
+        f = f * f * (3 - 2 * f);
+        return Math.min(1, ((float) Math.floor(k) + f) / n);
     }
 
     /** Where the strip centre rests on the loop for a rotation. */

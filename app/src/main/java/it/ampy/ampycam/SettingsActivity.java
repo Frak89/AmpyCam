@@ -95,6 +95,19 @@ public class SettingsActivity extends Activity {
                 }).setNegativeButton("ANNULLA", null).show();
         });
     }
+    private void intSlider(String title, String key, int min, int max, int def, String unit) {
+        LinearLayout c = card();
+        TextView t = text(title + ": " + p.i(key, def) + unit, 11, th.muted, false);
+        c.addView(t);
+        android.widget.SeekBar sb = new android.widget.SeekBar(this);
+        sb.setMax(max - min); sb.setProgress(p.i(key, def) - min);
+        sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar b, int pr, boolean u) { t.setText(title + ": " + (pr + min) + unit); if (u) p.put(key, pr + min); }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar b) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar b) { }
+        });
+        c.addView(sb);
+    }
     private static String label(int ms) { return ms == 0 ? "OFF" : ms + " ms"; }
 
     private void rebuild() { list.removeAllViews(); build(); }
@@ -115,6 +128,12 @@ public class SettingsActivity extends Activity {
         for (int i = 0; i < vl.length; i++) { vl[i] = ShutterFx.VIDEO_NAMES[i] + " — " + ShutterFx.VIDEO_DESC[i]; if (ShutterFx.VIDEO_KEYS[i].equals(vfx)) vi = i; }
         choice("EFFETTO AVVIO / STOP VIDEO", vl, vi, i -> p.put("vfx", ShutterFx.VIDEO_KEYS[i]));
         msSlider("ANIMAZIONE BARRA CANON IN ROTAZIONE (serpente)", "snakeMs", 0, 3000, 900);
+        choice("STILE MOVIMENTO BARRA", HudView.SNAKE_STYLES, p.i("snakeStyle", 0), i -> p.put("snakeStyle", i));
+        choice("ANDAMENTO (easing)", HudView.SNAKE_EASES, p.i("snakeEase", 0), i -> p.put("snakeEase", i));
+        intSlider("AMPIEZZA ONDULAZIONE", "snakeAmp", 0, 100, 32, " %");
+        intSlider("NUMERO DI ONDE (decimi)", "snakeWaves", 5, 40, 16, "");
+        intSlider("VELOCITÀ ONDULAZIONE", "snakeWaveSpeed", 0, 40, 18, "");
+        intSlider("SCIE (copie dietro)", "snakeTrail", 0, 6, 2, "");
         toggle("liveStyle", "Picture Style nel mirino", "Anteprima dal vivo del look scelto (come la simulazione Canon)", true);
 
         section("SCATTO");

@@ -159,27 +159,74 @@ public final class ImageSaver {
     }
 
     /** Fake bokeh: background from a strongly down-scaled copy, sharp subject through a soft radial mask. */
+    /**
+     * Portrait background blur. The background is a real (3-pass box ≈ gaussian) blur computed on a ~480 px copy
+     * that was reduced by successive halvings (no aliasing), then scaled back up: a smooth signal scales up without
+     * blocks. The subject stays sharp through a soft elliptical mask centred on the face (or the frame centre).
+     */
     static Bitmap portrait(Bitmap b, RectF subj, int strength) {
         int w = b.getWidth(), h = b.getHeight();
-        float k = 0.02f + 0.08f * (1 - strength / 100f);
-        Bitmap small = Bitmap.createScaledBitmap(b, Math.max(8, (int) (w * k)), Math.max(8, (int) (h * k)), true);
-        Bitmap mid = Bitmap.createScaledBitmap(small, Math.max(16, w / 8), Math.max(16, h / 8), true);
+        Bitmap sm = b;
+        while (Math.max(sm.getWidth(), sm.getHeight()) / 2 >= 480) {
+            Bitmap n = Bitmap.createScaledBitmap(sm, sm.getWidth() / 2, sm.getHeight() / 2, true);
+            if (sm != b) sm.recycle();
+            sm = n;
+        }
+        int sw = sm.getWidth(), sh = sm.getHeight();
+        int[] px = new int[sw * sh];
+        sm.getPixels(px, 0, sw, 0, 0, sw, sh);
+        if (sm != b) sm.recycle();
+        int radius = 2 + Math.round(Math.max(0, Math.min(100, strength)) / 100f * 12);
+        int[] tmp = new int[px.length];
+        for (int pass = 0; pass < 3; pass++) { boxH(px, tmp, sw, sh, radius); boxV(tmp, px, sw, sh, radius); }
+        Bitmap blurred = Bitmap.createBitmap(px, sw, sh, Bitmap.Config.ARGB_8888);
+        // two-step smooth upscale
+        Bitmap up = Bitmap.createScaledBitmap(blurred, Math.max(sw, w / 2), Math.max(sh, h / 2), true);
+        blurred.recycle();
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
-        Paint fp = new Paint(Paint.FILTER_BITMAP_FLAG);
-        c.drawBitmap(mid, null, new RectF(0, 0, w, h), fp);
-        float cx, cy, rad;
+        Paint fp = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+        c.drawBitmap(up, null, new RectF(0, 0, w, h), fp);
+        up.recycle();
+        float cx, cy, rx, ry;
         if (subj != null && subj.width() > 0) {
-            cx = subj.centerX() * w; cy = (subj.centerY() + subj.height() * 0.6f) * h;
-            rad = Math.max(subj.width() * w, subj.height() * h) * 1.6f;
-        } else { cx = w / 2f; cy = h * 0.5f; rad = Math.min(w, h) * 0.55f; }
+            cx = subj.centerX() * w; cy = (subj.centerY() + subj.height() * 0.7f) * h;
+            rx = subj.width() * w * 1.5f; ry = Math.max(subj.height() * h * 2.6f, rx * 1.4f);
+        } else { cx = w / 2f; cy = h * 0.52f; rx = Math.min(w, h) * 0.42f; ry = rx * 1.45f; }
         BitmapShader sharp = new BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
-        RadialGradient mask = new RadialGradient(cx, cy, rad, new int[]{0xff000000, 0xff000000, 0x00000000}, new float[]{0, 0.55f, 1}, Shader.TileMode.CLAMP);
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        RadialGradient mask = new RadialGradient(cx, cy, rx, new int[]{0xff000000, 0xff000000, 0x00000000},
+            new float[]{0, 0.62f, 1}, Shader.TileMode.CLAMP);
+        Matrix m = new Matrix(); m.setScale(1, ry / rx, cx, cy); mask.setLocalMatrix(m);   // vertical ellipse
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.DITHER_FLAG);
         p.setShader(new ComposeShader(mask, sharp, PorterDuff.Mode.SRC_IN));
         c.drawRect(0, 0, w, h, p);
-        small.recycle(); mid.recycle(); b.recycle();
+        b.recycle();
         return out;
+    }
+
+    private static void boxH(int[] in, int[] out, int w, int h, int r) {
+        int div = 2 * r + 1;
+        for (int y = 0; y < h; y++) {
+            int row = y * w, sr = 0, sg = 0, sb = 0;
+            for (int i = -r; i <= r; i++) { int c = in[row + Math.max(0, Math.min(w - 1, i))]; sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255; }
+            for (int x = 0; x < w; x++) {
+                out[row + x] = 0xff000000 | ((sr / div) << 16) | ((sg / div) << 8) | (sb / div);
+                int a = in[row + Math.min(w - 1, x + r + 1)], d = in[row + Math.max(0, x - r)];
+                sr += ((a >> 16) & 255) - ((d >> 16) & 255); sg += ((a >> 8) & 255) - ((d >> 8) & 255); sb += (a & 255) - (d & 255);
+            }
+        }
+    }
+    private static void boxV(int[] in, int[] out, int w, int h, int r) {
+        int div = 2 * r + 1;
+        for (int x = 0; x < w; x++) {
+            int sr = 0, sg = 0, sb = 0;
+            for (int i = -r; i <= r; i++) { int c = in[Math.max(0, Math.min(h - 1, i)) * w + x]; sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255; }
+            for (int y = 0; y < h; y++) {
+                out[y * w + x] = 0xff000000 | ((sr / div) << 16) | ((sg / div) << 8) | (sb / div);
+                int a = in[Math.min(h - 1, y + r + 1) * w + x], d = in[Math.max(0, y - r) * w + x];
+                sr += ((a >> 16) & 255) - ((d >> 16) & 255); sg += ((a >> 8) & 255) - ((d >> 8) & 255); sb += (a & 255) - (d & 255);
+            }
+        }
     }
 
     static Bitmap thumb(String path, int max) {
