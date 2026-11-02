@@ -275,6 +275,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
         infoBar = new InfoBar(this, th);
+        hud.strip = infoBar;
         infoBar.setOnClickListener(v -> openQ());
         bottom.addView(infoBar, new LinearLayout.LayoutParams(-1, -2));
 
@@ -391,6 +392,10 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         while (d < -180) d += 360;
         uiRot = uiRot + d;
         hud.uiRot = target;
+        boolean detach = target != 0;
+        infoBar.detached = detach;
+        infoBar.animate().alpha(detach ? 0f : 1f).setDuration(200).start();
+        infoBar.setClickable(!detach);
         refresh();
         for (View v : rotatables) {
             float s = fitScale(v, uiRot);
@@ -483,6 +488,7 @@ public class CameraActivity extends Activity implements CameraEngine.Callback, S
         infoBar.levelBlink = fullManual && Math.abs(meterErr) > 3;
         infoBar.extra = (st.aeLock ? "✱" : "") + (st.htp ? " D+" : "") + (st.silent ? " 🔇" : "");
         infoBar.invalidate();
+        if (infoBar.detached) hud.invalidate();
     }
 
     private int shotsLeft() {

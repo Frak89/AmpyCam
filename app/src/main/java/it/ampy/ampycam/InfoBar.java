@@ -25,10 +25,17 @@ public class InfoBar extends View {
     public void setTheme(Theme t) { th = t; invalidate(); }
     float dp(float v) { return v * getResources().getDisplayMetrics().density; }
 
+    public float stripHeight() { return dp(58); }
+
     @Override protected void onMeasure(int w, int h) { setMeasuredDimension(MeasureSpec.getSize(w), (int) dp(58)); }
 
-    @Override protected void onDraw(Canvas c) {
-        float w = getWidth(), h = getHeight();
+    /** true when the HUD draws the strip rotated along the viewfinder (landscape). */
+    public boolean detached;
+
+    @Override protected void onDraw(Canvas c) { if (!detached) drawStrip(c, getWidth(), getHeight()); }
+
+    /** Draws the whole strip into a w×h box at (0,0) of the canvas (also used by the HUD, rotated). */
+    public void drawStrip(Canvas c, float w, float h) {
         p.setColor(0xd9070b13); c.drawRect(0, 0, w, h, p);
         p.setColor(Theme.a(th.accent, 70)); c.drawRect(0, 0, w, dp(1), p);
         float y1 = dp(24), x = dp(10);
@@ -81,7 +88,7 @@ public class InfoBar extends View {
         String icons = wb + "  " + style + "  " + drive + "  " + met + "  " + af + (raw ? "  RAW+L" : "  L") + (flashOn ? "  ⚡" : "") + (extra.isEmpty() ? "" : "  " + extra);
         float ix = sx + sw + dp(14);
         c.drawText(ellipsize(icons, w - ix - dp(8)), ix, y2 - dp(2), t);
-        if (levelBlink) postInvalidateDelayed(300);
+        if (levelBlink && !detached) postInvalidateDelayed(300);
     }
 
     private void drawMarker(Canvas c, float x, float y) {

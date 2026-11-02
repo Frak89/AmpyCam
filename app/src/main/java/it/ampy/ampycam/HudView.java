@@ -38,7 +38,15 @@ public class HudView extends View {
     public float exposureSlider = Float.NaN;     // -1..1 Pixel-style slider next to the AF ring
     public String toast = ""; public long toastAt;
     public int mfAssist = 0;
-    public float uiRot = 0;                      // texts turn with the phone                     // magnify factor shown as label
+    public float uiRot = 0;                      // texts turn with the phone
+    public InfoBar strip;                        // drawn here, rotated, when the phone is sideways
+
+    /** Viewfinder rect expressed in the rotated (user) frame, centred on the origin. */
+    private RectF userFrame() {
+        boolean side = Math.abs(uiRot) == 90;
+        float w = side ? view.height() : view.width(), h = side ? view.width() : view.height();
+        return new RectF(-w / 2, -h / 2, w / 2, h / 2);
+    }                     // magnify factor shown as label
 
     public HudView(Context c, Theme th) {
         super(c);
@@ -65,8 +73,18 @@ public class HudView extends View {
             p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(1)); p.setColor(0x66ffffff); c.drawRect(view, p);
         }
         drawGrid(c);
-        if (level) drawLevel(c);
-        if (histogram && an != null) drawHistogram(c);
+        // level, histogram and Canon info strip live in the user's frame (they turn with the phone)
+        RectF uf = userFrame();
+        c.save();
+        c.translate(view.centerX(), view.centerY()); c.rotate(uiRot);
+        if (level) drawLevel(c, uf);
+        if (histogram && an != null) drawHistogram(c, uf);
+        if (strip != null && uiRot != 0) {
+            float sh = strip.stripHeight();
+            c.save(); c.translate(uf.left, uf.bottom - sh); strip.drawStrip(c, uf.width(), sh); c.restore();
+            if (strip.levelBlink) anim = true;
+        }
+        c.restore();
         // faces
         p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(dp(1.5f)); p.setColor(a(th.secondary, 220));
         for (RectF f : faces) bracket(c, f, dp(10));
@@ -197,7 +215,7 @@ public class HudView extends View {
         p.setStyle(Paint.Style.FILL);
     }
 
-    private void drawLevel(Canvas c) {
+    private void drawLevel(Canvas c, RectF view) {
         float cx = view.centerX(), cy = view.centerY();
         float len = Math.min(view.width(), view.height()) * 0.28f;
         boolean ok = Math.abs(roll) < 1f;
@@ -224,7 +242,7 @@ public class HudView extends View {
         }
     }
 
-    private void drawHistogram(Canvas c) {
+    private void drawHistogram(Canvas c, RectF view) {
         float w = dp(116), h = dp(50), x = view.left + dp(10), y = view.top + dp(44);
         p.setStyle(Paint.Style.FILL); p.setColor(0x99000000);
         c.drawRect(x, y, x + w, y + h, p);
