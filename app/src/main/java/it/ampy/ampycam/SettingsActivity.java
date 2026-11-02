@@ -90,7 +90,7 @@ public class SettingsActivity extends Activity {
             e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER); e.setText(String.valueOf(p.i(key, def)));
             new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle(title + " (ms)").setView(e)
                 .setPositiveButton("OK", (d, w) -> {
-                    try { int v = Math.max(min, Math.min(max, Integer.parseInt(e.getText().toString().trim()))); p.put(key, v); sb.setProgress((v - min) / 10); t.setText(title + ": " + label(v)); }
+                    try { int nv = Math.max(min, Math.min(max, Integer.parseInt(e.getText().toString().trim()))); p.put(key, nv); sb.setProgress((nv - min) / 10); t.setText(title + ": " + label(nv)); }
                     catch (Exception ignored) { }
                 }).setNegativeButton("ANNULLA", null).show();
         });
