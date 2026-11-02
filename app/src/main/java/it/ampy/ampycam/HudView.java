@@ -37,7 +37,8 @@ public class HudView extends View {
     public String nightText = "";
     public float exposureSlider = Float.NaN;     // -1..1 Pixel-style slider next to the AF ring
     public String toast = ""; public long toastAt;
-    public int mfAssist = 0;                     // magnify factor shown as label
+    public int mfAssist = 0;
+    public float uiRot = 0;                      // texts turn with the phone                     // magnify factor shown as label
 
     public HudView(Context c, Theme th) {
         super(c);
@@ -100,11 +101,13 @@ public class HudView extends View {
             anim = true;
         }
         if (!countdown.isEmpty()) {
+            c.save(); c.rotate(uiRot, view.centerX(), view.centerY());
             t.setTextSize(dp(110)); t.setTextAlign(Paint.Align.CENTER);
             float j = (now / 40) % 3 - 1;
             t.setColor(a(th.secondary, 160)); c.drawText(countdown, view.centerX() - dp(3) + j, view.centerY() + dp(36), t);
             t.setColor(a(th.accent, 160)); c.drawText(countdown, view.centerX() + dp(3), view.centerY() + dp(36), t);
             t.setColor(0xffffffff); c.drawText(countdown, view.centerX(), view.centerY() + dp(36), t);
+            c.restore();
             anim = true;
         }
         if (nightProgress >= 0) {
@@ -120,10 +123,12 @@ public class HudView extends View {
         if (!toast.isEmpty() && now - toastAt < 1800) {
             t.setTextSize(dp(13)); t.setTextAlign(Paint.Align.CENTER);
             float w = t.measureText(toast) + dp(28);
-            float y = view.top + dp(64);
+            float y = (uiRot == 90 || uiRot == -90) ? view.centerY() : view.top + dp(64);
+            c.save(); c.rotate(uiRot, view.centerX(), y - dp(5));
             p.setStyle(Paint.Style.FILL); p.setColor(0xcc070b13);
             c.drawRoundRect(view.centerX() - w / 2, y - dp(20), view.centerX() + w / 2, y + dp(10), dp(6), dp(6), p);
             t.setColor(th.accent); c.drawText(toast, view.centerX(), y, t);
+            c.restore();
             anim = true;
         }
         if (mfAssist > 1) {
